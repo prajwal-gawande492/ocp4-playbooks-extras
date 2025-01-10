@@ -1,0 +1,8 @@
+---
+file_src1: "/root/ansible/ocp4-playbooks-extras/playbooks/roles/ocp-service-controller-function/files/sample-web-app.yaml"
+file_src2: "/root/ansible/ocp4-playbooks-extras/playbooks/roles/ocp-service-controller-function/files/test-svc.yaml"
+file_dest1: "/tmp/sample-web-app.yaml"
+file_dest2: "/tmp/test-svc.yaml"
+output_file: "/root/ansible/ocp4-playbooks-extras/playbooks/roles/ocp-service-controller-function/files/output.txt"
+test_namespace: "test-privileged"
+

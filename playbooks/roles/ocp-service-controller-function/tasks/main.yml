@@ -1,0 +1,102 @@
+---
+
+- name: Check if the output file exists
+  stat:
+    path: "{{ output_file }}"
+  register: file_status
+
+- name: Delete output file if file exists
+  file:
+    path: "{{ output_file }}"
+    state: absent
+  when: file_status.stat.exists
+
+- name: Check if the deployment file exists
+  stat:
+    path: "{{ file_dest1 }}"
+  register: file_status
+
+- name: Delete the deployment file if file exists
+  file:
+    path: "{{ file_dest1 }}"
+    state: absent
+  when: file_status.stat.exists
+
+- name: Check if the service file exists
+  stat:
+    path: "{{ file_dest2 }}"
+  register: file_status
+
+- name: Delete output file if file exists
+  file:
+    path: "{{ file_dest2 }}"
+    state: absent
+  when: file_status.stat.exists
+
+- name: Create a file to save the results
+  file:
+    path: "{{ output_file }}"
+    state: touch
+
+- name: Delete the service if already exist
+  shell: oc delete -f "{{ file_src2 }}"
+- name: Delete the sample-app if already exist
+  shell: oc delete -f "{{ file_src1 }}"
+
+- name: "Copy sample-app file"
+  copy:
+    src: "{{ file_src1 }}"
+    dest: "{{ file_dest1 }}"
+- name: "Copy sample-app file"
+  copy:
+    src: "{{ file_src2 }}"
+    dest: "{{ file_dest2 }}"
+
+- name: "Create namespace to deploy sample-web-app"
+  shell: oc create ns "{{ test_namespace }}" -o yaml | oc label -f - security.openshift.io/scc.podSecurityLabelSync=false pod-security.kubernetes.io/enforce=privileged pod-security.kubernetes.io/audit=privileged pod-security.kubernetes.io/warn=privileged --overwrite
+  register: create_ns
+
+- debug:
+    msg: "{{ create_ns.stdout_lines }}"
+
+- name: "Run sample-web-app file"
+  shell: oc create -f "{{ file_dest1 }}" | tee "{{ output_file }}"
+  register: create_pod
+
+- name: "Wait for sample-app to come up"
+  wait_for:
+    delay: 10
+
+- name: "Check for the pods"
+  shell: oc get pods -n "{{ test_namespace }}" | tee "{{ output_file }}"
+  register: check_pod
+
+- debug:
+    msg: "{{ check_pod.stdout_lines }}"
+
+- name: "Run the service file"
+  shell: oc create -f "{{ file_dest2 }}" | tee "{{ output_file }}"
+  register: create_service
+
+- name: "Wait for service to come up"
+  wait_for:
+    delay: 10
+
+- name: "Check the service"
+  shell: oc get service -A | grep test-svc | tee "{{ output_file }}"
+  register: check_service
+
+- debug:
+    msg: "{{ check_service.stdout_lines }}"
+
+- name: "Get the pod"
+  shell: oc get pods -n "{{ test_namespace }}" -o=jsonpath='{.items[0].metadata.name}'
+  register: first_pod
+
+- name: "Check the logs of the service"
+  shell: oc logs "{{ first_pod.stdout }}" -n '{{ test_namespace }}' | tee "{{ output_file }}"
+  register: service_logs
+
+- debug:
+    msg: "{{ service_logs.stdout_lines }}"
+
