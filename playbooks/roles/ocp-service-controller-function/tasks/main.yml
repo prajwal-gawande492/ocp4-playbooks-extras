@@ -13,23 +13,23 @@
 
 - name: Check if the deployment file exists
   stat:
-    path: "{{ file_dest1 }}"
+    path: "{{ file_dest }}/sample-web-app.yaml"
   register: file_status
 
 - name: Delete the deployment file if file exists
   file:
-    path: "{{ file_dest1 }}"
+    path: "{{ file_dest }}/sample-web-app.yaml"
     state: absent
   when: file_status.stat.exists
 
 - name: Check if the service file exists
   stat:
-    path: "{{ file_dest2 }}"
+    path: "{{ file_dest }}/test-svc.yaml"
   register: file_status
 
 - name: Delete output file if file exists
   file:
-    path: "{{ file_dest2 }}"
+    path: "{{ file_dest }}/test-svc.yaml"
     state: absent
   when: file_status.stat.exists
 
@@ -39,18 +39,20 @@
     state: touch
 
 - name: Delete the service if already exist
-  shell: oc delete -f "{{ file_src2 }}"
+  shell: oc delete -f "{{ role_path }}/files/test-svc.yaml"
+
 - name: Delete the sample-app if already exist
-  shell: oc delete -f "{{ file_src1 }}"
+  shell: oc delete -f "{{ role_path }}/files/sample-web-app.yaml"
 
 - name: "Copy sample-app file"
   copy:
-    src: "{{ file_src1 }}"
-    dest: "{{ file_dest1 }}"
+    src: "{{ role_path }}/files/sample-web-app.yaml"
+    dest: "{{ file_dest }}"
+
 - name: "Copy sample-app file"
   copy:
-    src: "{{ file_src2 }}"
-    dest: "{{ file_dest2 }}"
+    src: "{{ role_path }}/files/test-svc.yaml"
+    dest: "{{ file_dest }}"
 
 - name: "Create namespace to deploy sample-web-app"
   shell: oc create ns "{{ test_namespace }}" -o yaml | oc label -f - security.openshift.io/scc.podSecurityLabelSync=false pod-security.kubernetes.io/enforce=privileged pod-security.kubernetes.io/audit=privileged pod-security.kubernetes.io/warn=privileged --overwrite
@@ -60,7 +62,7 @@
     msg: "{{ create_ns.stdout_lines }}"
 
 - name: "Run sample-web-app file"
-  shell: oc create -f "{{ file_dest1 }}" | tee "{{ output_file }}"
+  shell: oc create -f "{{ file_dest }}/sample-web-app.yaml" | tee "{{ output_file }}"
   register: create_pod
 
 - name: "Wait for sample-app to come up"
@@ -75,7 +77,7 @@
     msg: "{{ check_pod.stdout_lines }}"
 
 - name: "Run the service file"
-  shell: oc create -f "{{ file_dest2 }}" | tee "{{ output_file }}"
+  shell: oc create -f "{{ file_dest }}/test-svc.yaml" | tee "{{ output_file }}"
   register: create_service
 
 - name: "Wait for service to come up"
