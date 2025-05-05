@@ -1,38 +1,9 @@
 ---
-# tasks file for playbooks/roles/ocp-compliance
+# tasks file for playbooks/roles/ocp-disa-stig-compliance
 
 - name: Check if cluster operators and nodes are healthy
   include_role:
     name: check-cluster-health
-
-- name: Clean up
-  include_tasks: "{{ role_path }}/tasks/compliance-cleanup.yaml"
-  when: compliance_cleanup
-
-- name: Create working directory
-  file:
-    state: "directory"
-    path: "{{ compliance_directory }}"
-
-- name: Setup custom catalog source
-  block:
-  - name: Include the global-secret-update role
-    include_role:
-        name: global-secret-update
-    when: compliance_enable_global_secret   
-
-  - name: Set fact variable for CatalogSource name
-    set_fact:
-      compliance_catalogsource: "qe-app-registry"
-
-  - name: Include role to create ImageContentSourcePolicy and CatalogSource
-    include_role:
-      name: set-custom-catalogsource
-    vars:
-      custom_catalogsource_name: "{{ compliance_catalogsource }}"
-      custom_catalogsource_display_name: "Compliance Operator"
-      custom_catalogsource_image: "{{ compliance_catalogsource_image }}"
-  when: compliance_catalogsource_image != '' and compliance_catalogsource_image != None
 
 - name: Search for the StorageClass
   kubernetes.core.k8s_info:
@@ -113,59 +84,18 @@
     - name: Check if pods are running
       shell: oc get pods -n openshift-compliance --no-headers | grep "Running" | wc -l
       register: compliance_pods
-      until: compliance_pods.stdout|int == 3
+      until: compliance_pods.stdout|int == 2
       retries: 15
       delay: 60
 
-- name: Run e2e test cases
-  block:
-  - name: Install dependencies for running e2e tests
-    dnf:
-      name: make
-      state: present
+- name: Switch to openshift-compliance project
+  shell: oc project openshift-compliance
 
-  - name: Include role for installation of Go lang
-    include_role:
-      name: golang-installation
-    vars:
-      go_tarball: "{{ compliance_go_tarball }}"
-      golang_path: "/usr/local"
+- name: Enable rhcos4-disa-stig profiles
+  include_tasks: rhcos4_disa_stig.yml
 
-  - name: Include role for installing oc compliance plugin
-    include_role: 
-      name: ocp-cli-plugins
-      tasks_from: oc-compliance-cli-plugin.yml
+- name: Enable ocp4-disa-stig profiles part1
+  include_tasks: ocp4_disa_stig1.yml
 
-  - name: Clone the opeshift-test-private repository
-    git:
-      repo: "https://{{ compliance_github_username }}:{{ compliance_github_token }}@github.com{{ compliance_e2e_github_repo | urlsplit('path') }}"
-      dest: "{{ compliance_directory }}/openshift-tests-private"
-      version: "{{ compliance_e2e_github_branch }}"
-
-  - name: Run make target
-    make:
-      chdir: "{{ compliance_directory }}/openshift-tests-private"
-      target: build
-
-  - name: Generate Compliance Operators test cases list
-    shell: |
-      ./bin/extended-platform-tests run all --dry-run | grep "Compliance" | grep -v "FIO\|hosted\|HyperShiftMGMT\|upgrade\|42663\|Security_Profiles_Operator" > tests.txt
-    args:
-      chdir: "{{ compliance_directory }}/openshift-tests-private"
-    ignore_errors: true
-
-  - name: Run Compliance Operator and oc-compliance e2e tests
-    shell: |
-      ./bin/extended-platform-tests run -f tests.txt -o {{ compliance_directory }}/e2e-output.txt
-    args:
-      chdir: "{{ compliance_directory }}/openshift-tests-private"
-    ignore_errors: true
-
-  - name: Re run failed tests 
-    script: "{{ role_path }}/files/run-e2e.sh"
-    args:
-      chdir: "{{ compliance_directory }}/openshift-tests-private"
-
-  environment: "{{ compliance_e2e_env }}"
-  ignore_errors: true
-  when: compliance_e2e
+- name: Enable ocp4-disa-stig profiles part2
+  include_tasks: ocp4_disa_stig2.yml
