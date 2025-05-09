@@ -1,5 +1,4 @@
 ---
 file_dest: "/tmp"
-output_file: "{{ role_path }}/files/output.txt"
 test_namespace: "test-privileged"
 

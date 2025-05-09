@@ -1,16 +1,5 @@
 ---
 
-- name: Check if the output file exists
-  stat:
-    path: "{{ output_file }}"
-  register: file_status
-
-- name: Delete output file if file exists
-  file:
-    path: "{{ output_file }}"
-    state: absent
-  when: file_status.stat.exists
-
 - name: Check if the deployment file exists
   stat:
     path: "{{ file_dest }}/sample-web-app.yaml"
@@ -27,22 +16,19 @@
     path: "{{ file_dest }}/test-svc.yaml"
   register: file_status
 
-- name: Delete output file if file exists
+- name: Delete service file if file exists
   file:
     path: "{{ file_dest }}/test-svc.yaml"
     state: absent
   when: file_status.stat.exists
 
-- name: Create a file to save the results
-  file:
-    path: "{{ output_file }}"
-    state: touch
-
 - name: Delete the service if already exist
   shell: oc delete -f "{{ role_path }}/files/test-svc.yaml"
+  ignore_errors: true  
 
 - name: Delete the sample-app if already exist
   shell: oc delete -f "{{ role_path }}/files/sample-web-app.yaml"
+  ignore_errors: true
 
 - name: "Copy sample-app file"
   copy:
@@ -62,30 +48,32 @@
     msg: "{{ create_ns.stdout_lines }}"
 
 - name: "Run sample-web-app file"
-  shell: oc create -f "{{ file_dest }}/sample-web-app.yaml" | tee "{{ output_file }}"
+  shell: oc create -f "{{ file_dest }}/sample-web-app.yaml"
   register: create_pod
 
 - name: "Wait for sample-app to come up"
   wait_for:
-    delay: 10
+    timeout: 120
+    delay: 2
 
 - name: "Check for the pods"
-  shell: oc get pods -n "{{ test_namespace }}" | tee "{{ output_file }}"
+  shell: oc get pods -n "{{ test_namespace }}"
   register: check_pod
 
 - debug:
     msg: "{{ check_pod.stdout_lines }}"
 
 - name: "Run the service file"
-  shell: oc create -f "{{ file_dest }}/test-svc.yaml" | tee "{{ output_file }}"
+  shell: oc create -f "{{ file_dest }}/test-svc.yaml"
   register: create_service
 
 - name: "Wait for service to come up"
   wait_for:
-    delay: 10
+    timeout: 120
+    delay: 2
 
 - name: "Check the service"
-  shell: oc get service -A | grep test-svc | tee "{{ output_file }}"
+  shell: oc get service -A | grep test-svc
   register: check_service
 
 - debug:
@@ -96,9 +84,45 @@
   register: first_pod
 
 - name: "Check the logs of the service"
-  shell: oc logs "{{ first_pod.stdout }}" -n '{{ test_namespace }}' | tee "{{ output_file }}"
+  shell: oc logs "{{ first_pod.stdout }}" -n '{{ test_namespace }}'
   register: service_logs
 
 - debug:
     msg: "{{ service_logs.stdout_lines }}"
+
+- name: "Get the externalIP of the service"
+  shell: oc get service -n "{{ test_namespace }}" -o=jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}'
+  register: lb_externalip
+
+- name: "Wait for loadbalancer to comes up"
+  wait_for:
+    delay: 5
+
+- name: "Check the application is accessible through an external IP"
+  shell: curl http://{{ lb_externalip.stdout }}
+  register: curl_ip
+
+- debug:
+    msg: "{{ curl_ip.stdout_lines }}" 
+
+- name: Clean up the service 
+  shell: oc delete -f "{{ role_path }}/files/test-svc.yaml"
+  ignore_errors: true
+  register: cleanup_srv
+
+- debug:
+    msg: "{{ cleanup_srv.stdout_lines }}"
+
+- name: Clean up the sample-app resources
+  shell: oc delete -f "{{ role_path }}/files/sample-web-app.yaml"
+  ignore_errors: true
+  register: cleanup_dly
+
+- debug:
+    msg: "{{ cleanup_dly.stdout_lines }}"
+
+- name: "Delete namespace created for sample-web-app"
+  shell: oc delete ns "{{ test_namespace }}"
+  register: delete_ns
+
 
