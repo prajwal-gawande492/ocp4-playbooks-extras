@@ -134,6 +134,13 @@
 - debug:
     msg: "{{ cleanup_srv.stdout_lines }}"
 
+- name: Check if  the service has been deleted
+  shell: oc get service -A --no-headers | grep test-svc | wc -l
+  register: func_srv
+  until: func_srv.stdout|int == 0
+  retries: 15
+  delay: 60
+
 - name: Clean up the sample-app resources
   shell: oc delete -f "{{ role_path }}/files/sample-web-app.yaml"
   ignore_errors: true
@@ -142,8 +149,20 @@
 - debug:
     msg: "{{ cleanup_dly.stdout_lines }}"
 
+- name: Check if all the pods has been deleted
+  shell: oc get pods -n "{{ test_namespace }}" --no-headers | wc -l
+  register: del_pod
+  until: del_pod.stdout|int == 0
+  retries: 15
+  delay: 60
+
 - name: "Delete namespace created for sample-web-app"
   shell: oc delete ns "{{ test_namespace }}"
   register: delete_ns
 
-
+- name: Check if the namespace gets deleted
+  shell: oc get namespace --no-headers | grep "{{ test_namespace }}" | wc -l
+  register: srv_namespace
+  until: srv_namespace.stdout|int == 0
+  retries: 15
+  delay: 30
