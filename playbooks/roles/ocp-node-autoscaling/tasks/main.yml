@@ -1,0 +1,143 @@
+---
+# tasks file for playbooks/roles/ocp-node-autoscaling
+
+- name: Check if cluster operators and nodes are healthy
+  include_role:
+    name: check-cluster-health
+
+- name: Validate the auto scaling up nodes
+  block:
+  - name: Create clusterAutoscaler for scaling of nodes
+    kubernetes.core.k8s:
+      state: present
+      definition:
+        apiVersion: autoscaling.openshift.io/v1
+        kind: ClusterAutoscaler
+        metadata:
+          name: default
+        spec:
+          maxNodeProvisionTime: 30m
+          podPriorityThreshold: -10
+          resourceLimits:
+            cores:
+              max: 100
+              min: 1
+            maxNodesTotal: 10
+            memory:
+              max: 300
+              min: 1
+          scaleDown:
+            delayAfterAdd: 10m
+            delayAfterDelete: 5m
+            delayAfterFailure: 30s
+            delayAfterFailure: 30s
+            enabled: false
+            unneededTime: 5m
+            utilizationThreshold: "0.4"
+
+  - name: Get the machineset for machineAutoscaler.
+    shell: oc get machinesets -n openshift-machine-api  -o=jsonpath='{.items[0].metadata.name}'
+    register: get_machineset
+
+  - name: Create machineAutoscaler for scaling of nodes
+    kubernetes.core.k8s:
+      state: present
+      definition:
+        apiVersion: autoscaling.openshift.io/v1beta1
+        kind: MachineAutoscaler
+        metadata:
+          name: test-ma
+          namespace: openshift-machine-api
+        spec:
+          maxReplicas: 10
+          minReplicas: 1
+          scaleTargetRef:
+            apiVersion: machine.openshift.io/v1beta1
+            kind: MachineSet
+            name: "{{ get_machineset }}"
+  
+  - name: Check machine and cluster autoscaler
+    block:
+    - name: Check the clusterAutoscaler
+      shell: oc get clusterautoscaler -A
+      register: clusterscaler
+
+    - debug:
+        msg: "{{ clusterscaler.stdout_lines }}"
+
+    - name: Check the machineAutoscaler
+      shell: oc get machineautoscaler.autoscaling.openshift.io/test-ma -n openshift-machine-api
+      register: machinescaler
+
+    - debug:
+        msg: "{{ machinescaler.stdout_lines }}"
+
+
+  - name: Create a busybox deployment
+    block:
+    - name: Create a namespace and label it to deploy busybox
+      kubernetes.core.k8s:
+        name: test
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Add label to the created namespace
+      kubernetes.core.k8s:
+        state: patched
+        kind: Namespace
+        name: test
+        definition:
+          metadata:
+            labels:
+              security.openshift.io/scc.podSecurityLabelSync: "false"
+              pod-security.kubernetes.io/enforce: privileged
+              pod-security.kubernetes.io/audit: privileged
+              pod-security.kubernetes.io/warn: privileged
+
+    - name: Deploy a busybox app with 2 replicas
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ role_path }}/files/busybox.yaml"
+        wait_timeout: 30
+
+    - name: Scale the busybox deployment to 10 replicas
+      kubernetes.core.k8s_scale:
+        src: "{{ role_path }}/files/busybox.yaml"
+        replicas: 10
+        wait: no
+        wait_timeout: 30
+
+  - name: Check if any new machines get provisioning after scaling the deployment to 10 replicas
+    block:
+    - name: Check if any new machine provisioning is in progress
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Machine
+        register: machines
+        ignore_errors: true
+
+    - name: Wait for Machine resources to have Running phase
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Machine
+        register: machine_status
+        until: >
+          machine_status.resources | length == 0 or 
+          machine_status.resources |
+          rejectattr('status.phase', 'equalto', 'Running') |
+          list | length == 0
+        retries: "{{ (timeout_seconds / retry interval) | int }}" 
+        delay: "{{ retry_interval}}"
+        when: machine is succeeded
+
+    - name: Display Machine status
+      debug:
+        msg: "Machine {{ item.metadata.name }} is in {{ item.status.phase | default('Unknown') }} phase"
+      loop: "{{ machine_status.resources }}"
+      when:
+        - machines is succeeded
+        - machine_status.resources is defined
+
+
+
