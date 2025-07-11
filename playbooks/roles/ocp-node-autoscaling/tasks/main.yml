@@ -108,6 +108,13 @@
         wait: no
         wait_timeout: 30
 
+    - name: Check the busybox deployment
+      shell: oc get pods -n test
+      register: busyboxpod
+     
+    - debug:
+        msg: "{{ busyboxpod.stdout_lines }}"
+
   - name: Check if any new machines get provisioning after scaling the deployment to 10 replicas
     block:
     - name: Check if any new machine provisioning is in progress
@@ -138,6 +145,31 @@
       when:
         - machines is succeeded
         - machine_status.resources is defined
+     
+    - name: Check number of machines
+      shell: oc get machineset -n openshift-machine-api -o=jsonpath='{.items[0].status.replicas}'
+      register: machines_count
 
+    - name: Wait for all nodes to be in Ready state
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+        register: nodes_status
+        until: >
+          node_status.resources | length >= machines_count and
+          node_status.resources | 
+          selectattr('status.conditions', 'defined') |
+          map(attribute='status.conditions', 'defined') |
+          flatten |
+          selectattr('type', 'equalto', 'Ready') |
+          selectattr('status', 'equalto', 'True' ) |
+          list | length >= machines_count
+        retries: "{{ (timeout_seconds / retry_interval) | int }}"
+        delay: "{{ retry_interval }}"
 
+    - name: Check no. of nodes
+      shell: oc get nodes 
+      register: node_status
 
+    - debug: 
+        msg: "{{ node_status.stdout_lines }}" 
