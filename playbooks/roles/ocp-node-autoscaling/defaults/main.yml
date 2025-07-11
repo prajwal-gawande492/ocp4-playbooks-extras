@@ -1,2 +1,5 @@
 # node-autoscaling required vars
 autoscaling_enabled: false
+timeout_seconds: 600
+retry_interval: 10
+
