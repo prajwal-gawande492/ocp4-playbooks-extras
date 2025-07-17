@@ -5,8 +5,12 @@
   include_role:
     name: check-cluster-health
 
-- name: Validate the auto scaling up nodes
+- name: Validate the auto scaling up of nodes
   block:
+  - name: Check the machine count before autoscaling
+    shell: oc get machineset -n openshift-machine-api -o=jsonpath='{.items[0].status.replicas}'
+    register: machine_replicas
+
   - name: Create clusterAutoscaler for scaling of nodes
     kubernetes.core.k8s:
       state: present
@@ -72,7 +76,6 @@
     - debug:
         msg: "{{ machinescaler.stdout_lines }}"
 
-
   - name: Create a busybox deployment
     block:
     - name: Create a namespace and label it to deploy busybox
@@ -107,6 +110,12 @@
         replicas: 10
         wait: no
         wait_timeout: 30
+      delay: 180
+
+    - name: "Wait for busybox-app to come up"
+      wait_for:
+        timeout: 180
+        delay: 2
 
     - name: Check the busybox deployment
       shell: oc get pods -n test
@@ -118,59 +127,58 @@
   - name: Check if any new machines get provisioning after scaling the deployment to 10 replicas
     block:
     - name: Check if any new machine provisioning is in progress
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Machine
-      register: machines
-      ignore_errors: true
+      shell: oc get machines -n openshift-machine-api
+      register: machines_check
+
+    - debug:
+        msg: "{{ machines_check.stdout_lines }}"
 
     - name: Wait for Machine resources to have Running phase
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Machine
-      register: machine_status
-      until: >
-        machine_status.resources | length == 0 or 
-        machine_status.resources |
-        rejectattr('status.phase', 'equalto', 'Running') |
-        list | length == 0
-      retries: "{{ (timeout_seconds / retry_interval) | int }}" 
-      delay: "{{ retry_interval }}"
-      when: machines is succeeded
+      shell: oc wait --for=jsonpath='{.status.phase}'=Running --all --timeout=300s machines -n openshift-machine-api
+      register: result
+      until: result.stderr == ""
+      retries: 5
+      delay: 10
 
-
-    - name: Display Machine status
-      debug:
-        msg: "Machine {{ item.metadata.name }} is in {{ item.status.phase | default('Unknown') }} phase"
-      loop: "{{ machine_status.resources }}"
-      when:
-        - machines is succeeded
-        - machine_status.resources is defined
-     
-    - name: Check number of machines
+    - name: Check number of machines get provisioned
       shell: oc get machineset -n openshift-machine-api -o=jsonpath='{.items[0].status.replicas}'
       register: machines_count
 
-    - name: Wait for all nodes to be in Ready state
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Node
-      register: node_status
-      until: >
-        node_status.resources | length >= machines_count.int and
-        node_status.resources | 
-        selectattr('status.conditions', 'defined') |
-        map(attribute='status.conditions', 'defined') |
-        flatten |
-        selectattr('type', 'equalto', 'Ready') |
-        selectattr('status', 'equalto', 'True') |
-        list | length >= machines_count.int
-      retries: "{{ (timeout_seconds / retry_interval) | int }}"
-      delay: "{{ retry_interval }}"
+    - debug: 
+        msg: "{{ machines_count.stdout | int}}"
 
-    - name: Check no. of nodes
-      shell: oc get nodes 
+    - name: Check number of controlPlane nodes
+      shell: oc get controlPlanemachineset -n openshift-machine-api -o=jsonpath='{.items[0].status.replicas}'
+      register: controlplane_nodes
+
+    - name: Wait for all nodes to be in Ready state
+      shell: oc wait --all --for=condition=Ready --timeout=240s nodes  
+      register: ready_status
+      until: ready_status.stderr == ""
+      retries: 2
+      delay: 10
+      
+    - name: Validate the Ready status for nodes
+      shell: oc get nodes --no-headers | grep  Ready | wc -l
       register: node_status
+
+    - name: Validate the number of machines matches the number of worker nodes
+      debug: 
+        msg: "Number of nodes matches the number of machines"
+      when: "{{ machines_count.stdout | int == (node_status.stdout | int  - controlplane_nodes.stdout | int) }}" 
+
+    - name: Validate the count for autoscaling of nodes.
+      debug:
+        msg: "{{ machine_replicas.stdout | int - machines_count.stdout | int}} new nodes get automatically created "
+
+    - name: Check nodes
+      shell: oc get nodes
+      register: check_node
 
     - debug: 
-        msg: "{{ node_status.stdout_lines }}" 
+        msg: "{{ check_node.stdout_lines }}" 
+
+    - name: Check if cluster operators and nodes are healthy after scaling up the nodes
+      include_role:
+        name: check-cluster-health
+
