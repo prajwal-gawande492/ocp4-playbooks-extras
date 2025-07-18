@@ -182,3 +182,169 @@
       include_role:
         name: check-cluster-health
 
+  - name: Delete the resources created for scaling up the nodes.
+    block:
+    - name: Delete the machinAutoscaler created for scale up the nodes.
+      kubernetes.core.k8s:
+        state: absent
+        definition:
+          apiVersion: autoscaling.openshift.io/v1beta1
+          kind: MachineAutoscaler
+          metadata:
+            name: test-ma
+            namespace: openshift-machine-api
+
+    - name: Delete the clusterAutoscaler created for scale up the nodes
+      kubernetes.core.k8s:
+        state: absent
+        definition:
+          apiVersion: autoscaling.openshift.io/v1
+          kind: ClusterAutoscaler
+          metadata:
+            name: default
+
+- name: Validate the auto scaling down of nodes
+  block:
+  - name: Check the machine count before autoscaling
+    shell: oc get machineset -n openshift-machine-api -o=jsonpath='{.items[0].status.replicas}'
+    register: machineset_replicas
+
+  - name: Create clusterAutoscaler for scaling down the nodes
+    kubernetes.core.k8s:
+      state: present
+      definition:
+        apiVersion: autoscaling.openshift.io/v1
+        kind: ClusterAutoscaler
+        metadata:
+          name: default
+        spec:
+          podPriorityThreshold: -10
+          resourceLimits:
+            cores:
+              max: 4
+              min: 2
+            maxNodesTotal: 24
+            memory:
+              max: 32
+              min: 4  
+          scaleDown:
+            delayAfterAdd: 10m
+            delayAfterDelete: 5m
+            delayAfterFailure: 30s
+            enabled: true
+            unneededTime: 5m
+            utilizationThreshold: "0.4"
+        
+  - name: Create machineAutoscaler for scaling down the nodes        
+    kubernetes.core.k8s:
+      state: present
+      definition:
+        apiVersion: autoscaling.openshift.io/v1
+        kind: MachineAutoscaler
+        metadata:
+          name: test-ma
+          namespace: openshift-machine-api
+        spec:
+          maxReplicas: 12
+          minReplicas: 2
+          scaleTargetRef:
+            apiVersion: machine.openshift.io/v1beta1
+            kind: MachineSet
+            name: "{{ get_machineset.stdout }}"
+
+  - name: Check the ClusterAutoscaler  
+    shell: oc get clusterautoscaler -A
+    register: clusterautoscaler
+
+  - debug:
+      msg: "{{ clusterautoscaler.stdout_lines }}"
+
+  - name: Check the MachineAutoscaler
+    shell: oc get machineautoscaler.autoscaling.openshift.io/test-ma -n openshift-machine-api
+    register: machineautoscaler
+
+  - debug: 
+      msg: "{{ machineautoscaler.stdout_lines }}"
+
+
+  - name: Scale down the busybox-deployment replicas
+    block: 
+    - name: Check the nodes before scaling down the deployment
+      shell: oc get nodes
+      register: node_bef_scaledown
+
+    - name: Display the nodes
+      debug:
+        msg: "{{ node_bef_scaledown.stdout_lines }}"
+          
+    - name: Check the busybox pods before scaling down 
+      shell: oc get pods -n test 
+      register: busypods
+
+    - debug:
+        msg: "{{ busypods.stdout_lines }}"
+
+    - name: Scale down the busybox deployment replicas to 2
+      kubernetes.core.k8s_scale:
+        src: "{{ role_path }}/files/busybox.yaml"
+        replicas: 2
+        wait: no
+        wait_timeout: 30
+      delay: 180
+
+    - name: "Wait for terminating the busybox pods"
+      wait_for:
+        timeout: 180
+        delay: 2
+
+    - name: Check the busybox deployment
+      shell: oc get pods -n test
+      register: pod_status
+
+    - debug:
+        msg: msg: "{{ pod_status.stdout_lines }}"
+  
+    - name: Check if any machines get deleted after scale down the deployment to 2 replicas
+      block:
+      - name: Check if any machines are deleting 
+        shell: oc get machines -n openshift-machine-api
+        register: machine_delete
+
+      - debug:
+          msg: "{{ machine_delete.stdout_lines }}"
+
+      - name: Wait till the Machine resources get Deleted
+        shell: oc wait --for=jsonpath='{.status.phase}'=Running --all --timeout=300s machines -n openshift-machine-api
+        register: deleting
+        until: deleting.stderr == ""
+        retries: 2
+        delay: 10
+
+      - name: Check number of machines get deleted
+        shell: oc get machineset -n openshift-machine-api -o=jsonpath='{.items[0].status.replicas}'
+        register: delete_count
+
+      - debug:
+          msg: "{{ delete_count.stdout | int}}"
+
+      - name: Wait for all nodes to be in Ready state
+        shell: oc wait --all --for=condition=Ready --timeout=240s nodes
+        register: ready_nodes
+        until: ready_status.stderr == ""
+        retries: 2
+        delay: 10
+
+
+      - name: Validate the Ready status for nodes
+        shell: oc get nodes --no-headers | grep  Ready | wc -l
+        register: ready_nodecount
+
+      - name: Validate the number of machines matches the number of worker nodes
+        debug:
+          msg: "Number of nodes matches the number of machines"
+        when: "{{ delete_count.stdout | int == (ready_nodecount.stdout | int  - controlplane_nodes.stdout | int) }}" 
+
+      - name: Validate the machine count for scaling down of nodes.
+        debug:
+          msg: "{{ machineset_replicas.stdout | int - delete_count.stdout | int}} nodes get automatically deleted"
+
