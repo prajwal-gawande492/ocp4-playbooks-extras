@@ -57,6 +57,7 @@ This repository consists of additional ansible playbooks for the following:
 1. Validate Autoscaling of nodes on IPI cluster
 1. Deploy Container Security Operator 
 1. Deploy Security Profiles Operator and run tests. 
+1. Deploy Quay Operator
 
 ## Assumptions:
 
