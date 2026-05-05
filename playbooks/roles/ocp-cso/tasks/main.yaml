@@ -1,4 +1,4 @@
- # check if Cluster Health is good
+# check if Cluster Health is good
 - name: Check if cluster operators and nodes are healthy
   include_role:
     name: check-cluster-health
@@ -60,15 +60,58 @@
   debug:
     msg: "CSO CatalogSource '{{ cso_catalogsource_name }}' is present and in Ready state."
 
-- name: Copy pull-secrets
-  copy:
-    src: "{{ cso_pull_secrets_path }}"
-    dest: /tmp/
+- name: Copy and validate pull-secret
+  block:
+    - name: Copy pull-secret
+      copy:
+        src: "{{ cso_pull_secrets_path }}"
+        dest: "/tmp/{{ cso_pull_secrets_path | basename }}"
 
-- name: Copy icsp
-  copy:
-    src: "{{ cso_icsp_path }}"
-    dest: /tmp/
+    - name: Read pull-secret file
+      set_fact:
+        pull_secret_raw: "{{ lookup('file', '/tmp/' ~ (cso_pull_secrets_path | basename)) }}"
+
+    - name: Fail if pull-secret is empty
+      fail:
+        msg: "Provided pull-secret file is empty"
+      when:
+        - pull_secret_raw | trim == ""
+
+    - name: Validate pull-secret JSON
+      set_fact:
+        validated_pull_secret: >-
+          {{
+            pull_secret_raw
+            if pull_secret_raw is mapping
+            else pull_secret_raw | from_json
+          }}
+  when: cso_pull_secrets_path | default('') | length > 0
+
+- name: Copy and validate ICSP
+  block:
+    - name: Copy icsp
+      copy:
+        src: "{{ cso_icsp_path }}"
+        dest: "/tmp/{{ cso_icsp_path | basename }}"
+
+    - name: Read icsp file
+      set_fact:
+        icsp_raw: "{{ lookup('file', '/tmp/' ~ (cso_icsp_path | basename)) }}"
+
+    - name: Fail if icsp file is empty
+      fail:
+        msg: "Provided ICSP file is empty"
+      when: icsp_raw | trim == ""
+
+    - name: Validate ICSP YAML
+      set_fact:
+        validated_icsp: >-
+          {{
+            icsp_raw
+            if icsp_raw is mapping
+            else icsp_raw | from_yaml
+          }}
+  when: cso_icsp_path | default('') | length > 0
 
 - name: merge existing and new pull secrets
   block:
@@ -85,11 +128,15 @@
 
     - name: Read new pull-secret file
       set_fact:
-        new_pull_secret_json: "{{ lookup('file', '/tmp/pull-secret.json') }}"
+        new_pull_secret_json: "{{ lookup('file', '/tmp/{{ cso_pull_secrets_path | basename }}') }}"
 
     - name: Merge pull secrets
       set_fact:
-        merged_pull_secret_json: "{{ existing_pull_secret_json | combine(new_pull_secret_json, recursive=True) | to_json }}"
+        merged_pull_secret_json: >-
+          {{
+            (existing_pull_secret_json if existing_pull_secret_json is mapping else existing_pull_secret_json | from_json)
+            | combine((new_pull_secret_json if new_pull_secret_json is mapping else new_pull_secret_json | from_json), recursive=True) | to_json
+          }}
 
     - name: Update pull-secret
       kubernetes.core.k8s:
@@ -110,16 +157,23 @@
     prompt: "Waiting 120 seconds to reconcile..."
 
 - name: Wait for MCP rollout
-  shell: oc get mcp -o jsonpath='{.items[*].status.conditions[?(@.type=="Updated")].status}'
+  shell: |
+    oc get mcp -o json | jq -e '
+      all(.items[].status.conditions[];
+        if .type=="Updated" then .status=="True"
+        elif .type=="Degraded" then .status=="False"
+        elif .type=="Progressing" then .status=="False"
+        else true end
+      )'
   register: mcp_status
   retries: 30
   delay: 30
-  until: "'True' in mcp_status.stdout"
+  until: mcp_status.rc == 0
 
 - name: Create ImageContentSourcePolicy
   kubernetes.core.k8s:
     state: present
-    src: "/tmp/icsp.yaml"
+    src: "/tmp/{{ cso_icsp_path | basename }}"
 
 - name: Wait 120 seconds for ImageContentSourcePolicy to reconcile
   pause:
@@ -165,4 +219,3 @@
 - name: Debug container-security-operator CSV status
   debug:
     msg: "Container Security Operator CSV has successfully reached 'Succeeded' state."
-
