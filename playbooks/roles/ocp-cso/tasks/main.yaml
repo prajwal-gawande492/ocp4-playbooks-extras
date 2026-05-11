@@ -128,7 +128,7 @@
 
     - name: Read new pull-secret file
       set_fact:
-        new_pull_secret_json: "{{ lookup('file', '/tmp/{{ cso_pull_secrets_path | basename }}') }}"
+        new_pull_secret_json: "{{ lookup('file', '/tmp/' ~ (cso_pull_secrets_path | basename)) }}"
 
     - name: Merge pull secrets
       set_fact:
@@ -151,6 +151,13 @@
           data:
             .dockerconfigjson: "{{ merged_pull_secret_json | b64encode }}"
 
+    - name: Remove pull-secret file
+      file:
+        path: "/tmp/{{ cso_pull_secrets_path | basename }}"
+        state: absent
+
+  when: cso_pull_secrets_path | default('') | length > 0
+
 - name: Wait 120 seconds to reconcile
   pause:
     seconds: 120
@@ -158,22 +165,18 @@
 
 - name: Wait for MCP rollout
   shell: |
-    oc get mcp -o json | jq -e '
-      all(.items[].status.conditions[];
-        if .type=="Updated" then .status=="True"
-        elif .type=="Degraded" then .status=="False"
-        elif .type=="Progressing" then .status=="False"
-        else true end
-      )'
+    oc get mcp -o jsonpath='{range .items[*]} {.status.conditions[?(@.type=="Updated")].status}{" "}{.status.conditions[?(@.type=="Updating")].status}{" "}{.status.conditions[?(@.type=="Degraded")].status}{"\n"}{end}'
   register: mcp_status
   retries: 30
   delay: 30
-  until: mcp_status.rc == 0
+  until:
+    - mcp_status.stdout is search('True False False')
 
 - name: Create ImageContentSourcePolicy
   kubernetes.core.k8s:
     state: present
     src: "/tmp/{{ cso_icsp_path | basename }}"
+  when: cso_icsp_path | default('') | length > 0
 
 - name: Wait 120 seconds for ImageContentSourcePolicy to reconcile
   pause:
@@ -219,3 +222,4 @@
 - name: Debug container-security-operator CSV status
   debug:
     msg: "Container Security Operator CSV has successfully reached 'Succeeded' state."
+
