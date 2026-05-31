@@ -174,3 +174,6 @@
 
 - import_playbook: ocp-spo.yml
   when: spo_enabled is defined and spo_enabled
+  
+- import_playbook: ocp-quay.yml
+  when: quay_enabled is defined and quay_enabled
