@@ -162,6 +162,9 @@
   pause:
     seconds: 120
     prompt: "Waiting 120 seconds to reconcile..."
+  when: 
+    - cso_pull_secrets_path | default('') | length > 0
+      or cso_pull_secrets_path | default('') | length > 0
 
 - name: Wait for MCP rollout
   shell: |
@@ -171,6 +174,9 @@
   delay: 30
   until:
     - mcp_status.stdout is search('True False False')
+  when:
+    - cso_pull_secrets_path | default('') | length > 0
+      or cso_pull_secrets_path | default('') | length > 0
 
 - name: Create ImageContentSourcePolicy
   kubernetes.core.k8s:
