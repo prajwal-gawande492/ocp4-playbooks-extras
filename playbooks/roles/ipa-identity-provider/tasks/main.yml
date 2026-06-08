@@ -17,7 +17,7 @@
     state: present
 
 - name: Add the SCC contraint to the user in {{ ipa_project_name }}
-  shell: "oc adm policy add-scc-to-user anyuid -z default -n {{ ipa_project_name }}"
+  shell: "oc adm policy add-scc-to-user privileged -z default -n {{ ipa_project_name }}"
 
 - name: Create a secret object with IPA_ADMIN_PASSWORD and IPA_DM_PASSWORD
   k8s:
@@ -45,9 +45,7 @@
         name: freeipa-configmap
         namespace: "{{ ipa_project_name }}"
       data:
-        CA_SUBJECT: |
-          CN=freeipa-test
-          O=FREEIPA-TEST
+        CA_SUBJECT: "CN=freeipa-test,O=FREEIPA-TEST"
         DEBUG_TRACE: ""
         IPA_SERVER_HOSTNAME: "freeipa-ldap.{{ ipa_project_name }}.svc"
         REALM: IPA.EXAMPLE.COM
@@ -78,6 +76,7 @@
             - name: freeipa-openshift-container
               image: "{{ freeipa_openshift_container_image }}"
               securityContext:
+                privileged: true
                 runAsUser: 0
               resources:
                 limits:
@@ -188,10 +187,10 @@
 
 - name: Getting pod log for deployed freeipa
   shell: "oc logs -n {{ ipa_project_name }} {{ ipa_pod.stdout_lines[0] }} | grep 'FreeIPA server configured'"
-  retries: 10
-  delay: 30
+  retries: 20
+  delay: 60
   register: freeipa_pod_log
-  until: freeipa_pod_log != ""
+  until: freeipa_pod_log.rc == 0
 
 - debug:
     msg: "{{ freeipa_pod_log.stdout_lines }}"
