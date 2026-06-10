@@ -1,4 +1,4 @@
- # check if Cluster Health is good
+# check if Cluster Health is good
 - name: Check if cluster operators and nodes are healthy
   include_role:
     name: check-cluster-health
@@ -23,6 +23,7 @@
   - name: Include the global-secret-update role
     include_role:
       name: global-secret-update
+    when: cso_enable_global_secret
 
   - name: Include role to create ImageContentSourcePolicy and CatalogSource
     include_role:
@@ -58,6 +59,135 @@
 - name: Debug output for CSO CatalogSource check
   debug:
     msg: "CSO CatalogSource '{{ cso_catalogsource_name }}' is present and in Ready state."
+
+- name: Copy and validate pull-secret
+  block:
+    - name: Copy pull-secret
+      copy:
+        src: "{{ cso_pull_secrets_path }}"
+        dest: "/tmp/{{ cso_pull_secrets_path | basename }}"
+
+    - name: Read pull-secret file
+      set_fact:
+        pull_secret_raw: "{{ lookup('file', '/tmp/' ~ (cso_pull_secrets_path | basename)) }}"
+
+    - name: Fail if pull-secret is empty
+      fail:
+        msg: "Provided pull-secret file is empty"
+      when:
+        - pull_secret_raw | trim == ""
+
+    - name: Validate pull-secret JSON
+      set_fact:
+        validated_pull_secret: >-
+          {{
+            pull_secret_raw
+            if pull_secret_raw is mapping
+            else pull_secret_raw | from_json
+          }}
+  when: cso_pull_secrets_path | default('') | length > 0
+
+- name: Copy and validate ICSP
+  block:
+    - name: Copy icsp
+      copy:
+        src: "{{ cso_icsp_path }}"
+        dest: "/tmp/{{ cso_icsp_path | basename }}"
+
+    - name: Read icsp file
+      set_fact:
+        icsp_raw: "{{ lookup('file', '/tmp/' ~ (cso_icsp_path | basename)) }}"
+
+    - name: Fail if icsp file is empty
+      fail:
+        msg: "Provided ICSP file is empty"
+      when: icsp_raw | trim == ""
+
+    - name: Validate ICSP YAML
+      set_fact:
+        validated_icsp: >-
+          {{
+            icsp_raw
+            if icsp_raw is mapping
+            else icsp_raw | from_yaml
+          }}
+  when: cso_icsp_path | default('') | length > 0
+
+- name: merge existing and new pull secrets
+  block:
+    - name: Get existing pull-secret
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: pull-secret
+        namespace: openshift-config
+      register: existing_secret
+
+    - name: Decode existing pull-secret
+      set_fact:
+        existing_pull_secret_json: "{{ existing_secret.resources[0].data['.dockerconfigjson'] | b64decode }}"
+
+    - name: Read new pull-secret file
+      set_fact:
+        new_pull_secret_json: "{{ lookup('file', '/tmp/' ~ (cso_pull_secrets_path | basename)) }}"
+
+    - name: Merge pull secrets
+      set_fact:
+        merged_pull_secret_json: >-
+          {{
+            (existing_pull_secret_json if existing_pull_secret_json is mapping else existing_pull_secret_json | from_json)
+            | combine((new_pull_secret_json if new_pull_secret_json is mapping else new_pull_secret_json | from_json), recursive=True) | to_json
+          }}
+
+    - name: Update pull-secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: pull-secret
+            namespace: openshift-config
+          type: kubernetes.io/dockerconfigjson
+          data:
+            .dockerconfigjson: "{{ merged_pull_secret_json | b64encode }}"
+
+    - name: Remove pull-secret file
+      file:
+        path: "/tmp/{{ cso_pull_secrets_path | basename }}"
+        state: absent
+
+  when: cso_pull_secrets_path | default('') | length > 0
+
+- name: Wait 120 seconds to reconcile
+  pause:
+    seconds: 120
+    prompt: "Waiting 120 seconds to reconcile..."
+  when: 
+    - cso_pull_secrets_path | default('') | length > 0
+      or cso_icsp_path | default('') | length > 0
+
+- name: Wait for MCP rollout
+  shell: |
+    oc get mcp -o jsonpath='{range .items[*]} {.status.conditions[?(@.type=="Updated")].status}{" "}{.status.conditions[?(@.type=="Updating")].status}{" "}{.status.conditions[?(@.type=="Degraded")].status}{"\n"}{end}'
+  register: mcp_status
+  retries: 30
+  delay: 30
+  until:
+    - mcp_status.stdout is search('True False False')
+  when:
+    - cso_pull_secrets_path | default('') | length > 0
+      or cso_icsp_path | default('') | length > 0
+
+- name: Create ImageContentSourcePolicy
+  kubernetes.core.k8s:
+    state: present
+    src: "/tmp/{{ cso_icsp_path | basename }}"
+  when: cso_icsp_path | default('') | length > 0
+
+- name: Wait 120 seconds for ImageContentSourcePolicy to reconcile
+  pause:
+    seconds: 120
+    prompt: "Waiting 120 seconds for ImageContentSourcePolicy to reconcile..."
 
 - name: Create OperatorGroup for CSO
   k8s:
