@@ -126,7 +126,6 @@
     | grep -oP "sha256~[a-zA-Z0-9\-\_\~]+"
   args:
     chdir: ~/certs
-    warn: false
   vars:
     OAUTH_ROUTE_HOST: "{{ oauthroutepath.resources[0].spec.host }}"
   environment:
